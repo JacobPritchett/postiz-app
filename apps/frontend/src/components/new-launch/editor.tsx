@@ -99,12 +99,18 @@ const InterceptUnderlineShortcut = Extension.create({
   },
 });
 
-// Auto-shorten URLs pasted into the editor by calling the backend shortener
-// at compose time. Without this, URLs are only shortened on publish, which
+// Auto-shorten URLs in the editor by calling the backend shortener at
+// compose time. Without this, URLs are only shortened on publish, which
 // breaks per-platform character counters (X 280, Bluesky 300) and surprises
 // users with overage errors. Threshold: any URL >= 30 chars that isn't already
 // on the shortener's own domain. Falls back to the original text on any
-// error so the user never loses their paste.
+// error so the user never loses content.
+//
+// Runs in two places:
+//   1. handlePaste — when the user pastes text into the composer
+//   2. onCreate    — when the editor first loads existing content (drafts
+//                    submitted via MCP, the public API, or saved-then-reopened)
+//                    so URLs from any path get the same treatment
 const URL_RE = /https?:\/\/[^\s<>"']+/gi;
 const SHORTEN_MIN_LENGTH = 30;
 
@@ -112,6 +118,44 @@ interface AutoShortenLinksOptions {
   fetcher: (url: string, init?: RequestInit) => Promise<Response>;
   shortLinkDomain?: string;
 }
+
+const collectShortenCandidates = (
+  text: string,
+  ownDomain: string | undefined
+): string[] => {
+  const matches = text.match(URL_RE);
+  if (!matches || matches.length === 0) return [];
+  return Array.from(new Set(matches)).filter((u) => {
+    if (u.length < SHORTEN_MIN_LENGTH) return false;
+    if (ownDomain && u.indexOf(ownDomain) !== -1) return false;
+    return true;
+  });
+};
+
+const shortenInText = async (
+  text: string,
+  candidates: string[],
+  fetcher: AutoShortenLinksOptions['fetcher']
+): Promise<string> => {
+  let replaced = text;
+  await Promise.all(
+    candidates.map(async (longUrl) => {
+      try {
+        const r = await fetcher('/posts/shorten-url', {
+          method: 'POST',
+          body: JSON.stringify({ url: longUrl }),
+        });
+        const data = (await r.json()) as { shortLink?: string | null };
+        if (data?.shortLink) {
+          replaced = replaced.split(longUrl).join(data.shortLink);
+        }
+      } catch {
+        // swallow — keep the original URL in `replaced`
+      }
+    })
+  );
+  return replaced;
+};
 
 const AutoShortenLinks = Extension.create<AutoShortenLinksOptions>({
   name: 'autoShortenLinks',
@@ -136,39 +180,20 @@ const AutoShortenLinks = Extension.create<AutoShortenLinksOptions>({
               event.clipboardData?.getData('text/plain') || '';
             if (!clipboardText) return false;
 
-            const matches = clipboardText.match(URL_RE);
-            if (!matches || matches.length === 0) return false;
-
-            const candidates = Array.from(new Set(matches)).filter((u) => {
-              if (u.length < SHORTEN_MIN_LENGTH) return false;
-              if (ownDomain && u.indexOf(ownDomain) !== -1) return false;
-              return true;
-            });
+            const candidates = collectShortenCandidates(
+              clipboardText,
+              ownDomain
+            );
             if (candidates.length === 0) return false;
 
             event.preventDefault();
 
             (async () => {
-              let replaced = clipboardText;
-              await Promise.all(
-                candidates.map(async (longUrl) => {
-                  try {
-                    const r = await fetcher('/posts/shorten-url', {
-                      method: 'POST',
-                      body: JSON.stringify({ url: longUrl }),
-                    });
-                    const data = (await r.json()) as {
-                      shortLink?: string | null;
-                    };
-                    if (data?.shortLink) {
-                      replaced = replaced.split(longUrl).join(data.shortLink);
-                    }
-                  } catch {
-                    // swallow — keep the original URL in `replaced`
-                  }
-                })
+              const replaced = await shortenInText(
+                clipboardText,
+                candidates,
+                fetcher
               );
-
               const { state } = view;
               const tr = state.tr.insertText(
                 replaced,
@@ -183,6 +208,29 @@ const AutoShortenLinks = Extension.create<AutoShortenLinksOptions>({
         },
       }),
     ];
+  },
+
+  onCreate() {
+    // Fires once when the editor is first instantiated with content.
+    // Handles drafts loaded from the API (MCP-generated, CRM-submitted,
+    // or just a previously-saved draft reopened in the composer).
+    const fetcher = this.options.fetcher;
+    const ownDomain = this.options.shortLinkDomain;
+    const editor = this.editor;
+
+    const html = editor.getHTML();
+    if (!html) return;
+
+    const candidates = collectShortenCandidates(html, ownDomain);
+    if (candidates.length === 0) return;
+
+    (async () => {
+      const replaced = await shortenInText(html, candidates, fetcher);
+      if (replaced === html) return;
+      // emitUpdate: true so the parent's onChange handler sees the
+      // rewritten content and persists it on next save.
+      editor.commands.setContent(replaced, { emitUpdate: true });
+    })();
   },
 });
 

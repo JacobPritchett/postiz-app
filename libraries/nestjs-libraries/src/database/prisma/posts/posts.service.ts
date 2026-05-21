@@ -873,6 +873,27 @@ export class PostsService {
     return '';
   }
 
+  // Heuristic for the auto-shorten path in createPost: returns true when any
+  // message contains a URL that's both long enough to be worth shortening AND
+  // isn't already on our shortener's domain. Mirrors the editor's compose-time
+  // threshold (30 chars) so the UI and the API agree on what counts as "long".
+  private hasShortenableUrl(messages: string[]): boolean {
+    const domain = ShortLinkService.provider.shortLinkDomain;
+    if (domain === 'empty') return false;
+    const urlRe = /https?:\/\/[^\s<>"']+/gi;
+    for (const m of messages || []) {
+      if (!m) continue;
+      const matches = m.match(urlRe);
+      if (!matches) continue;
+      for (const url of matches) {
+        if (url.length >= 30 && url.indexOf(domain) === -1) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
   async createPost(
     orgId: string,
     body: CreatePostDto,
@@ -886,14 +907,20 @@ export class PostsService {
       const removeLinks = !!provider?.stripLinks?.();
 
       const messages = (post.value || []).map((p) => p.content);
-      // No point shortlinking links on platforms that strip them out anyway
-      const updateContent =
-        !body.shortLink || removeLinks
-          ? messages
-          : await this._shortLinkService.convertTextToShortLinks(
-              orgId,
-              messages
-            );
+      // Auto-pre-shorten long URLs even when the caller didn't explicitly set
+      // body.shortLink. Covers MCP / public-api / CRM submissions where the
+      // caller has no UI to consent to shortening per-post and where leaving
+      // a 120-char UTM URL in the post would block publish on platforms with
+      // tight char limits (X 280, Bluesky 300). Behavior preserved for the
+      // shortLink === true path; loop-prevention inside convertTextToShortLinks
+      // already skips URLs already on the shortener's own domain, so this is
+      // safe to call against already-shortened content. No point shortlinking
+      // on platforms that strip links out anyway (removeLinks).
+      const shouldShorten =
+        !removeLinks && (body.shortLink || this.hasShortenableUrl(messages));
+      const updateContent = !shouldShorten
+        ? messages
+        : await this._shortLinkService.convertTextToShortLinks(orgId, messages);
 
       post.value = (post.value || []).map((p, i) => ({
         ...p,
