@@ -106,10 +106,13 @@ export class FarcasterProvider
 
     for (const channel of channels) {
       const data = await client.publishCast({
+        // @neynar/nodejs-sdk widened PostCastReqBodyEmbeds to require cast_id/castId
+        // even for URL embeds. Upstream Postiz hasn't followed suit yet. We don't
+        // use Farcaster at AT, so a cast unblocks the build without behavior change.
         embeds:
-          firstPost?.media?.map((media) => ({
+          (firstPost?.media?.map((media) => ({
             url: media.path,
-          })) || [],
+          })) as any) || [],
         signerUuid: accessToken,
         text: firstPost.message,
         ...(channel?.value?.id ? { channelId: channel?.value?.id } : {}),
@@ -148,10 +151,11 @@ export class FarcasterProvider
 
     for (const parentHash of parentIds) {
       const data = await client.publishCast({
+        // See note in `post()` above — same SDK type widening, same cast.
         embeds:
-          commentPost?.media?.map((media) => ({
+          (commentPost?.media?.map((media) => ({
             url: media.path,
-          })) || [],
+          })) as any) || [],
         signerUuid: accessToken,
         text: commentPost.message,
         parent: parentHash,
