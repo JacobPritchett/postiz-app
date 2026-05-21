@@ -40,6 +40,7 @@ import {
   Extension,
   mergeAttributes,
 } from '@tiptap/react';
+import { Plugin, PluginKey } from '@tiptap/pm/state';
 import Document from '@tiptap/extension-document';
 import Bold from '@tiptap/extension-bold';
 import Text from '@tiptap/extension-text';
@@ -95,6 +96,93 @@ const InterceptUnderlineShortcut = Extension.create({
         return this?.editor?.commands?.toggleUnderline();
       },
     };
+  },
+});
+
+// Auto-shorten URLs pasted into the editor by calling the backend shortener
+// at compose time. Without this, URLs are only shortened on publish, which
+// breaks per-platform character counters (X 280, Bluesky 300) and surprises
+// users with overage errors. Threshold: any URL >= 30 chars that isn't already
+// on the shortener's own domain. Falls back to the original text on any
+// error so the user never loses their paste.
+const URL_RE = /https?:\/\/[^\s<>"']+/gi;
+const SHORTEN_MIN_LENGTH = 30;
+
+interface AutoShortenLinksOptions {
+  fetcher: (url: string, init?: RequestInit) => Promise<Response>;
+  shortLinkDomain?: string;
+}
+
+const AutoShortenLinks = Extension.create<AutoShortenLinksOptions>({
+  name: 'autoShortenLinks',
+
+  addOptions() {
+    return {
+      fetcher: (url, init) => fetch(url, init),
+      shortLinkDomain: undefined,
+    };
+  },
+
+  addProseMirrorPlugins() {
+    const fetcher = this.options.fetcher;
+    const ownDomain = this.options.shortLinkDomain;
+
+    return [
+      new Plugin({
+        key: new PluginKey('autoShortenLinks'),
+        props: {
+          handlePaste: (view, event) => {
+            const clipboardText =
+              event.clipboardData?.getData('text/plain') || '';
+            if (!clipboardText) return false;
+
+            const matches = clipboardText.match(URL_RE);
+            if (!matches || matches.length === 0) return false;
+
+            const candidates = Array.from(new Set(matches)).filter((u) => {
+              if (u.length < SHORTEN_MIN_LENGTH) return false;
+              if (ownDomain && u.indexOf(ownDomain) !== -1) return false;
+              return true;
+            });
+            if (candidates.length === 0) return false;
+
+            event.preventDefault();
+
+            (async () => {
+              let replaced = clipboardText;
+              await Promise.all(
+                candidates.map(async (longUrl) => {
+                  try {
+                    const r = await fetcher('/posts/shorten-url', {
+                      method: 'POST',
+                      body: JSON.stringify({ url: longUrl }),
+                    });
+                    const data = (await r.json()) as {
+                      shortLink?: string | null;
+                    };
+                    if (data?.shortLink) {
+                      replaced = replaced.split(longUrl).join(data.shortLink);
+                    }
+                  } catch {
+                    // swallow — keep the original URL in `replaced`
+                  }
+                })
+              );
+
+              const { state } = view;
+              const tr = state.tr.insertText(
+                replaced,
+                state.selection.from,
+                state.selection.to
+              );
+              view.dispatch(tr);
+            })();
+
+            return true;
+          },
+        },
+      }),
+    ];
   },
 });
 
@@ -913,6 +1001,17 @@ export const OnlyEditor = forwardRef<
       Bold,
       InterceptBoldShortcut,
       InterceptUnderlineShortcut,
+      AutoShortenLinks.configure({
+        // Use the org-aware authed fetch so cookies + showorg headers come along.
+        // shortLinkDomain comes from NEXT_PUBLIC_SHORT_LINK_DOMAIN when present,
+        // so a paste of an already-shortened URL is left alone (no double-shorten).
+        fetcher: (url, init) =>
+          fetch(url, init as any) as unknown as Promise<Response>,
+        shortLinkDomain:
+          (typeof process !== 'undefined' &&
+            process.env?.NEXT_PUBLIC_SHORT_LINK_DOMAIN) ||
+          undefined,
+      }),
       BulletList,
       ListItem,
       Placeholder.configure({

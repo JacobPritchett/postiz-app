@@ -69,6 +69,34 @@ export class PostsController {
     return { ask: this._shortLinkService.askShortLinkedin(body.messages) };
   }
 
+  @Post('/shorten-url')
+  async shortenUrl(
+    @GetOrgFromRequest() org: Organization,
+    @Body() body: { url: string }
+  ) {
+    // Returns { shortLink } or { shortLink: null } when no provider is configured
+    // or the URL is already on the shortener's domain. Errors fall back to null
+    // so the editor can leave the original URL in place.
+    if (!body?.url || typeof body.url !== 'string') {
+      return { shortLink: null };
+    }
+    if (ShortLinkService.provider.shortLinkDomain === 'empty') {
+      return { shortLink: null };
+    }
+    if (body.url.indexOf(ShortLinkService.provider.shortLinkDomain) !== -1) {
+      return { shortLink: null };
+    }
+    try {
+      const shortLink = await ShortLinkService.provider.convertLinkToShortLink(
+        org.id,
+        body.url
+      );
+      return { shortLink: shortLink || null };
+    } catch (e) {
+      return { shortLink: null };
+    }
+  }
+
   @Post('/:id/comments')
   async createComment(
     @GetOrgFromRequest() org: Organization,
