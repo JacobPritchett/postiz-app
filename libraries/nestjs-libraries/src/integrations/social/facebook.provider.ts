@@ -7,7 +7,10 @@ import {
 } from '@gitroom/nestjs-libraries/integrations/social/social.integrations.interface';
 import { makeId } from '@gitroom/nestjs-libraries/services/make.is';
 import dayjs from 'dayjs';
-import { SocialAbstract } from '@gitroom/nestjs-libraries/integrations/social.abstract';
+import {
+  SocialAbstract,
+  ValidityMedia,
+} from '@gitroom/nestjs-libraries/integrations/social.abstract';
 import { FacebookDto } from '@gitroom/nestjs-libraries/dtos/posts/providers-settings/facebook.dto';
 import { DribbbleDto } from '@gitroom/nestjs-libraries/dtos/posts/providers-settings/dribbble.dto';
 import { Integration } from '@prisma/client';
@@ -30,12 +33,24 @@ export class FacebookProvider extends SocialAbstract implements SocialProvider {
     'pages_read_engagement',
     'read_insights',
   ];
-  override maxConcurrentJob = 100; // Facebook has reasonable rate limits
+  override maxConcurrentJob = 500; // Facebook has reasonable rate limits
   editor = 'normal' as const;
   maxLength() {
     return 63206;
   }
   dto = FacebookDto;
+
+  override async checkValidity(
+    [firstPost]: Array<ValidityMedia[]>,
+    settings: any
+  ): Promise<string | true> {
+    if (settings?.post_type === 'story') {
+      if (!firstPost?.length) {
+        return 'Story should have at least one media';
+      }
+    }
+    return true;
+  }
 
   override handleErrors(
     body: string,
@@ -51,13 +66,6 @@ export class FacebookProvider extends SocialAbstract implements SocialProvider {
       return {
         type: 'refresh-token' as const,
         value: 'Please re-authenticate your Facebook account',
-      };
-    }
-
-    if (body.indexOf('490') > -1) {
-      return {
-        type: 'refresh-token' as const,
-        value: 'Access token expired, please re-authenticate',
       };
     }
 
@@ -98,6 +106,13 @@ export class FacebookProvider extends SocialAbstract implements SocialProvider {
       };
     }
 
+    if (body.indexOf('2069019') > -1) {
+      return {
+        type: 'bad-body' as const,
+        value: 'Invalid file',
+      }
+    }
+
     if (body.indexOf('1404102') > -1) {
       return {
         type: 'bad-body' as const,
@@ -110,6 +125,13 @@ export class FacebookProvider extends SocialAbstract implements SocialProvider {
       return {
         type: 'refresh-token' as const,
         value: 'Page publishing authorization required, please re-authenticate',
+      };
+    }
+
+    if (body.indexOf('1366051') > -1) {
+      return {
+        type: 'bad-body' as const,
+        value: 'These photos were already posted.',
       };
     }
 
@@ -162,6 +184,26 @@ export class FacebookProvider extends SocialAbstract implements SocialProvider {
       return {
         type: 'bad-body' as const,
         value: 'Facebook service temporarily unavailable',
+      };
+    }
+
+    if (body.indexOf('4854002') > -1) {
+      return {
+        type: 'bad-body' as const,
+        value:
+          'Confirm your identity before you can publish as this Page. Open the Facebook app on your phone and follow the instructions',
+      };
+    }
+    if (body.indexOf('(#100) No permission to publish the video') > -1) {
+      return {
+        type: 'bad-body' as const,
+        value: 'Facebook return: No permission to publish the video',
+      };
+    }
+    if (body.indexOf('490') > -1) {
+      return {
+        type: 'refresh-token' as const,
+        value: 'Access token expired, please re-authenticate',
       };
     }
 
@@ -755,4 +797,3 @@ export class FacebookProvider extends SocialAbstract implements SocialProvider {
     }
   }
 }
-
