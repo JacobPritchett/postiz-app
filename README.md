@@ -1,3 +1,10 @@
+<!--
+  This is a FORK of gitroomhq/postiz-app, maintained by @JacobPritchett.
+  It is not an official Postiz distribution. See FORK.md for what differs.
+-->
+
+> **Note:** This is a personal **fork** of [`gitroomhq/postiz-app`](https://github.com/gitroomhq/postiz-app) (Postiz). It is **not** an official Postiz distribution. The `main` branch mirrors upstream and carries no original changes; fork-specific work lives on separate branches. See **[FORK.md](./FORK.md)** for details and **[LICENSE](./LICENSE)** (AGPL-3.0, inherited from upstream). For the official project and support, go to [postiz.com](https://postiz.com) and the [upstream repo](https://github.com/gitroomhq/postiz-app).
+
 <p align="center">
   <a href="https://postiz.com/" target="_blank">
   <picture>
