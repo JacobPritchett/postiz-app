@@ -25,9 +25,11 @@ export class LinkedinPageProvider
   override isBetweenSteps = true;
   override refreshWait = true;
   override maxConcurrentJob = 2; // LinkedIn Page has professional posting limits
+  // FORK PATCH (Arizona Talks): no `openid`/`profile` — see the matching
+  // comment in linkedin.provider.ts. This is the tile AT actually uses; the
+  // member identity below is transient anyway, since the integration is
+  // rebuilt from the picked org in `fetchPageInformation`.
   override scopes = [
-    'openid',
-    'profile',
     'w_member_social',
     'r_basicprofile',
     'rw_organization_admin',
@@ -59,25 +61,9 @@ export class LinkedinPageProvider
       })
     ).json();
 
-    const { vanityName } = await (
-      await fetch('https://api.linkedin.com/v2/me', {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-        },
-      })
-    ).json();
-
-    const {
-      name,
-      sub: id,
-      picture,
-    } = await (
-      await fetch('https://api.linkedin.com/v2/userinfo', {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-        },
-      })
-    ).json();
+    const { id, name, picture, username } = await this.memberIdentity(
+      accessToken
+    );
 
     return {
       id,
@@ -86,7 +72,7 @@ export class LinkedinPageProvider
       expiresIn: expires_in,
       name,
       picture,
-      username: vanityName,
+      username,
     };
   }
 
@@ -239,34 +225,18 @@ export class LinkedinPageProvider
 
     this.checkScopes(this.scopes, scope);
 
-    const {
-      name,
-      sub: id,
-      picture,
-    } = await (
-      await fetch('https://api.linkedin.com/v2/userinfo', {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-        },
-      })
-    ).json();
-
-    const { vanityName } = await (
-      await fetch('https://api.linkedin.com/v2/me', {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-        },
-      })
-    ).json();
+    const { id, name, picture, username } = await this.memberIdentity(
+      accessToken
+    );
 
     return {
-      id: id,
+      id,
       accessToken,
       refreshToken,
       expiresIn,
       name,
       picture,
-      username: vanityName,
+      username,
     };
   }
 
