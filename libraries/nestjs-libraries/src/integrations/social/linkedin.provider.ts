@@ -117,28 +117,59 @@ export class LinkedinProvider extends SocialAbstract implements SocialProvider {
     picture: string;
     username: string;
   }> {
-    const me = await (
-      await fetch(
-        'https://api.linkedin.com/v2/me?projection=(id,localizedFirstName,localizedLastName,vanityName,profilePicture(displayImage~:playableStreams))',
-        {
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-          },
-        }
-      )
-    ).json();
+    const projection =
+      '(id,localizedFirstName,localizedLastName,vanityName,profilePicture(displayImage~:playableStreams))';
 
-    return {
-      id: me?.id,
-      name:
-        [me?.localizedFirstName, me?.localizedLastName]
-          .filter(Boolean)
-          .join(' ') || me?.vanityName || '',
-      picture:
-        me?.profilePicture?.['displayImage~']?.elements?.[0]?.identifiers?.[0]
-          ?.identifier || '',
-      username: me?.vanityName,
-    };
+    // Legacy REST first (what `r_basicprofile` documents), then the versioned
+    // endpoint. Either can be the one an app's product mix allows, and a
+    // connect that silently stored `id: undefined` would create a broken
+    // integration that only fails later at post time — so this fails loudly
+    // instead if neither answers.
+    const attempts: Array<{ url: string; headers: Record<string, string> }> = [
+      {
+        url: `https://api.linkedin.com/v2/me?projection=${projection}`,
+        headers: { Authorization: `Bearer ${accessToken}` },
+      },
+      {
+        url: `https://api.linkedin.com/rest/me?projection=${projection}`,
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'X-Restli-Protocol-Version': '2.0.0',
+          'LinkedIn-Version': '202601',
+        },
+      },
+    ];
+
+    let lastBody = '';
+    for (const attempt of attempts) {
+      const response = await fetch(attempt.url, { headers: attempt.headers });
+      lastBody = await response.text();
+      if (!response.ok) continue;
+
+      const me = JSON.parse(lastBody || '{}');
+      if (!me?.id) continue;
+
+      return {
+        id: String(me.id),
+        name:
+          [me?.localizedFirstName, me?.localizedLastName]
+            .filter(Boolean)
+            .join(' ') ||
+          me?.vanityName ||
+          '',
+        picture:
+          me?.profilePicture?.['displayImage~']?.elements?.[0]?.identifiers?.[0]
+            ?.identifier || '',
+        username: me?.vanityName,
+      };
+    }
+
+    throw new BadBody(
+      'linkedin-member-identity',
+      lastBody,
+      '',
+      'Could not read the LinkedIn member profile. r_basicprofile should cover /v2/me — check the app products.'
+    );
   }
 
   async refreshToken(refresh_token: string): Promise<AuthTokenDetails> {
