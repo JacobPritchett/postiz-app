@@ -31,9 +31,18 @@ export class LinkedinProvider extends SocialAbstract implements SocialProvider {
   oneTimeToken = true;
 
   isBetweenSteps = false;
+  // FORK PATCH (Arizona Talks): no `openid`/`profile`.
+  //
+  // LinkedIn will not put the Community Management API in the same developer
+  // app as the sign-in products, and org-page posting needs Community
+  // Management (`rw_organization_admin` + `w_organization_social`). AT's app
+  // 231242118 therefore has Community Management and nothing else, so
+  // `openid`/`profile`/`email` come back as
+  // `Scope "openid" is not authorized for your application` and the whole
+  // connect fails before any org call runs. `r_basicprofile` ships with
+  // Community Management, and it is enough to identify the member via
+  // /v2/me — see `memberIdentity()` below. Keep this trimmed on rebase.
   scopes = [
-    'openid',
-    'profile',
     'w_member_social',
     'r_basicprofile',
     'rw_organization_admin',
@@ -95,6 +104,43 @@ export class LinkedinProvider extends SocialAbstract implements SocialProvider {
     return undefined;
   }
 
+  // FORK PATCH (Arizona Talks): replaces the OIDC /v2/userinfo lookup.
+  //
+  // /v2/userinfo needs `openid`, which AT's Community-Management-only app
+  // cannot request (see the `scopes` comment). /v2/me is covered by
+  // `r_basicprofile` and carries the same member id — LinkedIn's OIDC `sub`
+  // IS the /v2/me `id`, so `urn:li:person:<id>` still resolves and posting is
+  // unaffected. Returns the same shape the userinfo call did.
+  protected async memberIdentity(accessToken: string): Promise<{
+    id: string;
+    name: string;
+    picture: string;
+    username: string;
+  }> {
+    const me = await (
+      await fetch(
+        'https://api.linkedin.com/v2/me?projection=(id,localizedFirstName,localizedLastName,vanityName,profilePicture(displayImage~:playableStreams))',
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+          },
+        }
+      )
+    ).json();
+
+    return {
+      id: me?.id,
+      name:
+        [me?.localizedFirstName, me?.localizedLastName]
+          .filter(Boolean)
+          .join(' ') || me?.vanityName || '',
+      picture:
+        me?.profilePicture?.['displayImage~']?.elements?.[0]?.identifiers?.[0]
+          ?.identifier || '',
+      username: me?.vanityName,
+    };
+  }
+
   async refreshToken(refresh_token: string): Promise<AuthTokenDetails> {
     const {
       access_token: accessToken,
@@ -115,25 +161,9 @@ export class LinkedinProvider extends SocialAbstract implements SocialProvider {
       })
     ).json();
 
-    const { vanityName } = await (
-      await fetch('https://api.linkedin.com/v2/me', {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-        },
-      })
-    ).json();
-
-    const {
-      name,
-      sub: id,
-      picture,
-    } = await (
-      await fetch('https://api.linkedin.com/v2/userinfo', {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-        },
-      })
-    ).json();
+    const { id, name, picture, username } = await this.memberIdentity(
+      accessToken
+    );
 
     return {
       id,
@@ -142,7 +172,7 @@ export class LinkedinProvider extends SocialAbstract implements SocialProvider {
       expiresIn: expires_in,
       name,
       picture: picture || '',
-      username: vanityName,
+      username,
     };
   }
 
@@ -195,25 +225,9 @@ export class LinkedinProvider extends SocialAbstract implements SocialProvider {
 
     this.checkScopes(this.scopes, scope);
 
-    const {
-      name,
-      sub: id,
-      picture,
-    } = await (
-      await fetch('https://api.linkedin.com/v2/userinfo', {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-        },
-      })
-    ).json();
-
-    const { vanityName } = await (
-      await fetch('https://api.linkedin.com/v2/me', {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-        },
-      })
-    ).json();
+    const { id, name, picture, username } = await this.memberIdentity(
+      accessToken
+    );
 
     return {
       id,
@@ -222,7 +236,7 @@ export class LinkedinProvider extends SocialAbstract implements SocialProvider {
       expiresIn,
       name,
       picture,
-      username: vanityName,
+      username,
     };
   }
 
