@@ -158,7 +158,13 @@ export class LinkedinProvider extends SocialAbstract implements SocialProvider {
     const attempts: Array<{ url: string; headers: Record<string, string> }> = [
       {
         url: `https://api.linkedin.com/v2/me?projection=${projection}`,
-        headers: { Authorization: `Bearer ${accessToken}` },
+        // X-Restli-Protocol-Version is required by the documented Profile API
+        // contract. LinkedIn tolerates its absence today, but a refresh that
+        // fails here is converted into a channel disconnect, so conform.
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'X-Restli-Protocol-Version': '2.0.0',
+        },
       },
       {
         url: `https://api.linkedin.com/rest/me?projection=${projection}`,
