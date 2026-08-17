@@ -769,7 +769,11 @@ export class PostsService {
         image?: Array<{ path: string; thumbnail?: string }>;
       }>;
       settings?: any;
-    }>
+    }>,
+    // Callers that know the request's shortLink intent pass it: an explicit
+    // shortLink:true shortens every URL even when none is long enough to
+    // trigger the heuristic on its own.
+    shortLink?: boolean
   ) {
     return Promise.all(
       (posts || []).map(async (post) => {
@@ -829,35 +833,38 @@ export class PostsService {
         const maximumCharacters = provider.maxLength(additionalSettings, settings);
         const isX = integration.providerIdentifier === 'x';
 
-        const emptyContent = (post.value || []).some((a) => {
-          const strip = stripHtmlValidation('normal', a.content || '', true);
-          const length = isX ? weightedLength(strip) : strip.length;
-          return length === 0 && (a.image || []).length === 0;
-        });
-
         // Measure the post as it will PUBLISH, not as it was submitted.
-        // createPost auto-shortens long URLs (see hasShortenableUrl), so
-        // validating only the raw text rejects posts that are over the limit
-        // solely because a tracked UTM link hasn't been collapsed yet - which
-        // is every share-kit export and every API/MCP post that carries one.
-        //
-        // Takes the SMALLER of the raw and post-shortening measurements, so
-        // this can only ever loosen the check. That matters for X, where
-        // weightedLength already bills a URL at 23 chars via parseTweet:
-        // substituting a placeholder would count MORE than the real URL and
-        // make X stricter than it is today.
+        // createPost auto-shortens (see hasShortenableUrl), so validating raw
+        // text rejects posts that are over the limit only because a tracked
+        // UTM link hasn't collapsed yet - which is every share-kit export.
+        const stripped = (post.value || []).map((a) =>
+          stripHtmlValidation('normal', a.content || '', true)
+        );
+
+        // Shortening is conditional, so the estimate must be too: applying it
+        // when the converter won't run would under-count a post that really
+        // does publish long.
+        const willShorten =
+          shortLink === true || this.hasShortenableUrl(stripped);
+
         const measure = (text: string) => {
           const weighted = isX ? weightedLength(text) : text.length;
           return weighted > text.length ? weighted : text.length;
         };
 
-        const tooLong = (post.value || []).some((a) => {
-          const strip = stripHtmlValidation('normal', a.content || '', true);
-          const totalCharacters = Math.min(
-            measure(strip),
-            measure(this.asShortenedForLength(strip))
-          );
-          return totalCharacters > (maximumCharacters || 1000000);
+        const emptyContent = (post.value || []).some((a, i) => {
+          const strip = stripped[i] ?? '';
+          const length = isX ? weightedLength(strip) : strip.length;
+          return length === 0 && (a.image || []).length === 0;
+        });
+
+        const tooLong = stripped.some((strip) => {
+          // X is excluded on purpose: parseTweet already bills every URL at 23
+          // chars whether or not it's shortened, so substituting a placeholder
+          // would count MORE than the real link and make X stricter than today.
+          const measured =
+            !isX && willShorten ? this.asShortenedForLength(strip) : strip;
+          return measure(measured) > (maximumCharacters || 1000000);
         });
 
         return {
@@ -914,21 +921,36 @@ export class PostsService {
     );
   }
 
-  // Rewrites long URLs to a conservative stand-in for the shortlink they
-  // become at publish, so length validation can measure the real post. Length
-  // is all that matters here: nothing is persisted and no shortlink is
-  // minted, which is why validation can't just call the shortener (that would
-  // create link records for posts that then fail validation).
+  // Mirrors ShortLinkService.convertTextToShortLinks EXACTLY: same URL regex,
+  // same entity unescaping, same "skip URLs already on our domain" rule, and
+  // critically NO length threshold - once shortening activates the converter
+  // replaces every URL it recognises, including short ones that get LONGER as
+  // shortlinks. An estimator that diverges from the converter is worse than no
+  // estimator: it waves through posts that publish over-cap.
   //
-  // Deliberately over-estimates the shortlink so a genuinely over-cap post is
-  // never waved through. Mirrors hasShortenableUrl's 30-char threshold and
-  // its skip of URLs already on our own domain.
+  // Estimation only. Nothing is persisted and no shortlink is minted, which is
+  // why validation can't just call the shortener - that would create link
+  // records for posts that then fail validation.
   private asShortenedForLength(text: string): string {
     const domain = ShortLinkService.provider.shortLinkDomain;
     if (!domain || domain === 'empty') return text;
+
+    // The converter unescapes these before matching, so a URL carrying &amp;
+    // matches there but not here unless we do the same.
+    const normalized = (text || '')
+      .replace(/&amp;/g, '&')
+      .replace(/&quest;/g, '?')
+      .replace(/&num;/g, '#');
+
+    // Slightly over-estimates the shortlink (a go.aztalks.org/pz-XXXXXXX is
+    // 33). Over is the safe direction: it can cost a borderline post a visible
+    // rejection, where under lets an over-cap post through to the platform.
     const placeholder = 'x'.repeat(`https://${domain}/`.length + 12);
-    return (text || '').replace(/https?:\/\/[^\s<>"']+/gi, (url) =>
-      url.length >= 30 && url.indexOf(domain) === -1 ? placeholder : url
+    const urlRegex =
+      /(https?:\/\/(?:www\.)?[-a-zA-Z0-9@:%._\+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b(?:[-a-zA-Z0-9()@:%_\+.~#?&//=]*))/gm;
+
+    return normalized.replace(urlRegex, (url) =>
+      url.indexOf(domain) === -1 ? placeholder : url
     );
   }
 

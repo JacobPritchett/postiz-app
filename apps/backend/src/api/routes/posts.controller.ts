@@ -213,7 +213,8 @@ export class PostsController {
     // Server-side validation — never trust the client to have validated.
     const validation = await this._postsService.validatePosts(
       org.id,
-      rawBody?.posts || []
+      rawBody?.posts || [],
+      rawBody?.shortLink
     );
 
     const fail = (item: (typeof validation)[number], error: string) => {
