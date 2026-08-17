@@ -771,9 +771,15 @@ export class PostsService {
       settings?: any;
     }>,
     // Callers that know the request's shortLink intent pass it: an explicit
-    // shortLink:true shortens every URL even when none is long enough to
-    // trigger the heuristic on its own.
-    shortLink?: boolean
+    // shortLink shortens every URL even when none is long enough to trigger
+    // the heuristic on its own.
+    //
+    // Typed loose and compared by truthiness on purpose. This arrives across
+    // an untyped HTTP boundary, and CreatePostDto's transform later coerces a
+    // truthy string like "true" to a real boolean - so a strict === true here
+    // would see shortening as OFF while creation turns it ON, which is the one
+    // direction that lets a near-cap post through and publishes it over.
+    shortLink?: unknown
   ) {
     return Promise.all(
       (posts || []).map(async (post) => {
@@ -845,7 +851,7 @@ export class PostsService {
         // when the converter won't run would under-count a post that really
         // does publish long.
         const willShorten =
-          shortLink === true || this.hasShortenableUrl(stripped);
+          Boolean(shortLink) || this.hasShortenableUrl(stripped);
 
         const measure = (text: string) => {
           // X is billed by parseTweet, which already charges every URL a flat
