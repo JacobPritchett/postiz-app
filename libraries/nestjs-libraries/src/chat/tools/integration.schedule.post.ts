@@ -168,7 +168,11 @@ If the tools return errors, you would need to rerun it with the right parameters
                   })),
                 })),
               },
-            ]
+            ],
+            // Same flag creation passes below. Without it an explicit
+            // shortLink:true post whose URLs are all short validates on raw
+            // text and then grows past the cap when every URL is shortened.
+            platform.shortLink
           );
 
           if (validation.emptyContent) {

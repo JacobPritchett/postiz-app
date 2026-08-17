@@ -848,8 +848,13 @@ export class PostsService {
           shortLink === true || this.hasShortenableUrl(stripped);
 
         const measure = (text: string) => {
-          const weighted = isX ? weightedLength(text) : text.length;
-          return weighted > text.length ? weighted : text.length;
+          // X is billed by parseTweet, which already charges every URL a flat
+          // 23 chars whether or not it is shortened. Taking max() with the raw
+          // string length (the previous behaviour) therefore rejects tweets
+          // that X itself would accept, purely because an unshortened tracked
+          // URL is long in the raw text. Trust the weighted count for X.
+          if (isX) return weightedLength(text);
+          return text.length;
         };
 
         const emptyContent = (post.value || []).some((a, i) => {

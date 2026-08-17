@@ -201,7 +201,11 @@ export class PostsController {
     @GetOrgFromRequest() org: Organization,
     @Body() rawBody: any
   ) {
-    return this._postsService.validatePosts(org.id, rawBody?.posts || []);
+    return this._postsService.validatePosts(
+      org.id,
+      rawBody?.posts || [],
+      rawBody?.shortLink
+    );
   }
 
   @Post('/')
