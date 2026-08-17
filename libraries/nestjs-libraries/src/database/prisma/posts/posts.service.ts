@@ -835,11 +835,28 @@ export class PostsService {
           return length === 0 && (a.image || []).length === 0;
         });
 
+        // Measure the post as it will PUBLISH, not as it was submitted.
+        // createPost auto-shortens long URLs (see hasShortenableUrl), so
+        // validating only the raw text rejects posts that are over the limit
+        // solely because a tracked UTM link hasn't been collapsed yet - which
+        // is every share-kit export and every API/MCP post that carries one.
+        //
+        // Takes the SMALLER of the raw and post-shortening measurements, so
+        // this can only ever loosen the check. That matters for X, where
+        // weightedLength already bills a URL at 23 chars via parseTweet:
+        // substituting a placeholder would count MORE than the real URL and
+        // make X stricter than it is today.
+        const measure = (text: string) => {
+          const weighted = isX ? weightedLength(text) : text.length;
+          return weighted > text.length ? weighted : text.length;
+        };
+
         const tooLong = (post.value || []).some((a) => {
           const strip = stripHtmlValidation('normal', a.content || '', true);
-          const weighted = isX ? weightedLength(strip) : strip.length;
-          const totalCharacters =
-            weighted > strip.length ? weighted : strip.length;
+          const totalCharacters = Math.min(
+            measure(strip),
+            measure(this.asShortenedForLength(strip))
+          );
           return totalCharacters > (maximumCharacters || 1000000);
         });
 
@@ -894,6 +911,24 @@ export class PostsService {
         .format('YYYY-MM-DD HH:mm')} UTC. Saving it this way would publish it again to ${
         post.integration?.providerIdentifier || 'the channel'
       }. To edit without republishing, ${howToUpdate}. To intentionally publish again, pass republish: true.`
+    );
+  }
+
+  // Rewrites long URLs to a conservative stand-in for the shortlink they
+  // become at publish, so length validation can measure the real post. Length
+  // is all that matters here: nothing is persisted and no shortlink is
+  // minted, which is why validation can't just call the shortener (that would
+  // create link records for posts that then fail validation).
+  //
+  // Deliberately over-estimates the shortlink so a genuinely over-cap post is
+  // never waved through. Mirrors hasShortenableUrl's 30-char threshold and
+  // its skip of URLs already on our own domain.
+  private asShortenedForLength(text: string): string {
+    const domain = ShortLinkService.provider.shortLinkDomain;
+    if (!domain || domain === 'empty') return text;
+    const placeholder = 'x'.repeat(`https://${domain}/`.length + 12);
+    return (text || '').replace(/https?:\/\/[^\s<>"']+/gi, (url) =>
+      url.length >= 30 && url.indexOf(domain) === -1 ? placeholder : url
     );
   }
 
