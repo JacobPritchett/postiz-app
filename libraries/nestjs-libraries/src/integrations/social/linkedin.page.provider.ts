@@ -12,6 +12,8 @@ import { Integration } from '@prisma/client';
 import { Plug } from '@gitroom/helpers/decorators/plug.decorator';
 import { timer } from '@gitroom/helpers/utils/timer';
 import { Rules } from '@gitroom/nestjs-libraries/chat/rules.description.decorator';
+import { Tool } from '@gitroom/nestjs-libraries/integrations/tool.decorator';
+import { getSsrfSafeDispatcher } from '@gitroom/nestjs-libraries/dtos/webhooks/ssrf.safe.dispatcher';
 
 @Rules(
   'LinkedIn can have maximum one attachment when selecting video, when choosing a carousel on LinkedIn minimum amount of attachment must be two, and only pictures, if uploading a video, LinkedIn can have only one attachment'
@@ -38,6 +40,84 @@ export class LinkedinPageProvider
   ];
 
   override editor = 'normal' as const;
+
+  @Tool({
+    description: 'Upload a Postiz-hosted image as a LinkedIn event cover without publishing a post',
+    dataSchema: [
+      { key: 'url', type: 'string', description: 'Image URL returned by the Postiz upload API' },
+      { key: 'owner', type: 'string', description: 'Expected urn:li:organization of this Page' },
+    ],
+  })
+  async uploadEventCover(accessToken: string, data: { url: string; owner: string }, pageId: string, integration: Integration) {
+    const owner = `urn:li:organization:${pageId}`;
+    if (integration.disabled || integration.deletedAt || integration.refreshNeeded) {
+      throw new Error('Reconnect the LinkedIn Page before uploading a cover');
+    }
+    if (!/^\d+$/.test(pageId) || data.owner !== owner) {
+      throw new Error('Cover owner must match the connected LinkedIn Page');
+    }
+    // Only accept this deployment's public uploaded-media origin and prefix.
+    // No arbitrary URL fetches, local files, redirects, or caller-supplied tokens.
+    const storageProvider = process.env.STORAGE_PROVIDER || 'local';
+    if (!['local', 'cloudflare'].includes(storageProvider)) throw new Error('Cover uploader does not support this storage provider');
+    const base = new URL(storageProvider === 'cloudflare'
+      ? process.env.CLOUDFLARE_BUCKET_URL || ''
+      : `${process.env.FRONTEND_URL}/uploads`);
+    const url = new URL(data.url);
+    const prefix = base.pathname.replace(/\/$/, '') + '/';
+    if (url.protocol !== 'https:' || url.origin !== base.origin
+        || !url.pathname.startsWith(prefix) || url.username || url.password
+        || url.search || url.hash) {
+      throw new Error('Cover must be uploaded to Postiz first');
+    }
+    const response = await fetch(url, {
+      redirect: 'error', signal: AbortSignal.timeout(15000),
+      // @ts-ignore - undici option, matching the shared media transport.
+      dispatcher: getSsrfSafeDispatcher(),
+    });
+    const maxBytes = 10 * 1024 * 1024;
+    if (!response.ok || !response.body) throw new Error('Cover download failed');
+    if (Number(response.headers.get('content-length')) > maxBytes) {
+      await response.body.cancel();
+      throw new Error('Cover exceeds 10 MB');
+    }
+    const reader = response.body.getReader();
+    const chunks: Buffer[] = [];
+    let size = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        size += value.byteLength;
+        if (size > maxBytes) {
+          await reader.cancel();
+          throw new Error('Cover exceeds 10 MB');
+        }
+        chunks.push(Buffer.from(value));
+      }
+    } finally { reader.releaseLock(); }
+    const bytes = Buffer.concat(chunks);
+    const jpeg = bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+    const png = bytes.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10]));
+    const gif = ['GIF87a', 'GIF89a'].includes(bytes.subarray(0, 6).toString());
+    if (!jpeg && !png && !gif) throw new Error('Cover must be a JPG, PNG, or GIF');
+    const image = await this.uploadPicture(`cover.${jpeg ? 'jpg' : png ? 'png' : 'gif'}`, accessToken, pageId, bytes, 'company');
+    if (!/^urn:li:image:[A-Za-z0-9_-]+$/.test(image.id)) throw new Error('Invalid LinkedIn image response');
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const status = await (await this.fetch(
+        `https://api.linkedin.com/rest/images/${encodeURIComponent(image.id)}`,
+        { headers: { Authorization: `Bearer ${accessToken}`, 'LinkedIn-Version': '202601', 'X-Restli-Protocol-Version': '2.0.0' }, signal: AbortSignal.timeout(10000) }
+      )).json();
+      if (status.owner !== owner) throw new Error('LinkedIn cover owner mismatch');
+      if (status.status === 'AVAILABLE') {
+        // Events use the digitalmediaAsset representation of the same image ID.
+        return { assetUrn: image.id.replace('urn:li:image:', 'urn:li:digitalmediaAsset:'), imageUrn: image.id, owner, status: 'AVAILABLE' };
+      }
+      if (status.status === 'PROCESSING_FAILED') throw new Error('LinkedIn could not process the cover');
+      if (attempt < 9) await timer(1000);
+    }
+    throw new Error('LinkedIn cover is still processing; retry publishing later');
+  }
 
   override async refreshToken(
     refresh_token: string
